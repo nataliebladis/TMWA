@@ -1,0 +1,211 @@
+---
+title: "Lemmon Water Use - Version 2"
+date:  "`r format(Sys.Date(), '%B %d, %Y')`"
+author: "Natalie Bladis, Data Analyst Intern and Bijay Paudyal, Economist Intern"
+output:
+  #pdf_document
+  html_document
+  
+---
+
+
+```{r include=F}
+# Version 1.0 
+# Published date: CCYY-NN-DD
+```
+
+<!-- Setup some global knitr options to control when source code is displayed -->
+```{r , setup, include=F}
+knitr::opts_chunk$set(
+                        error = TRUE,
+                        echo = T,
+                        include = TRUE,
+                        collapse = TRUE,
+                        results = "asis",
+                        message = FALSE
+)
+```
+<!-- Set up the R working environment by loading libraries and working folder -->
+```{r loadlibs, }
+#  Load the required libraries to get the data from the database and work with
+#  the resulting data.frame containing the rights banking data.
+
+  library(tidyverse)  # Tidyverse
+# library(lubridate)  # Tidyverse library for working with dates.
+  library(DBI)        # Database interface.
+  library(odbc)       # ODBC is used to connect to water rights database.
+# library(haven)      # for importing STATA, SPSS, and SAS data.
+  library(dplyr)      # tidyverse package for working with dataframes.
+# library(dbplyr)     # tidyverse package for with database tables.
+# library(knitr)      # used to create tables
+  library(writexl)   # used to save the raw data to an Excel workbook.
+# library(stats)      # provides common statistic functions
+# library(janitor)    # provides tabyl and adorn functions
+  library(foreign)    # read data stored by minitab, s, sas, SPSS, stata, Systat, weka, dbase
+
+rm(list = ls())       # clear the workspace of any memory objects.
+options(digits = 9)
+```
+
+
+Bijay's script to get data into oracle.
+
+
+```{r read_data_dbf}
+lemmon_water_use<-read.dbf("S:\\2023\\Lemmon_Wtr_Use\\DataRaw\\Lemmon_Valley_Premise_20230911a.dbf")
+
+```
+
+```{r write_csv}
+#exporting the dfb data to csv format
+file_path<-"S:\\2023\\Lemmon_Wtr_Use\\DataRaw\\lemmon_water_use.csv"
+write.csv(lemmon_water_use, file = file_path, row.names = FALSE)
+
+lemmon_water_use<-  read.csv(file_path)
+
+```
+
+```{r rename_column}
+
+lemmon_water_use<-lemmon_water_use %>% 
+                  rename_all(tolower) %>% 
+                  mutate(prm=enquesta_p/10000)
+
+```
+
+
+```{r db-connect, echo=FALSE}
+
+# informtion on DBI interface is at https://dbi.r-dbi.org/reference/
+# use the DBI interface to connect to oracle database using odbc.
+  db0<- DBI::dbConnect(odbc::odbc(), dsn = "LRDAT0", uid = "loadres", 
+                       pwd = "resload")
+
+# use the DBI interface to connect to SQL Server SDE database using odbc.
+#  db2<- DBI::dbConnect(odbc::odbc(), dsn = "SDE_database")
+
+
+```
+
+
+```{r upload_to_server}
+
+# Set the schema name
+schema_name <- "loadres"
+
+# Set the table name
+table_name <- "lemmon_water_use"
+
+# Drop the existing table if it exists in the specified schema
+DBI::dbExecute(db0, paste0("DROP TABLE ", schema_name, ".", table_name))
+
+# Create the table in the specified schema and insert data
+DBI::dbWriteTable(db0, name = SQL(paste0(schema_name, ".", table_name)), 
+                  value = lemmon_water_use, overwrite = TRUE, row.names = FALSE)
+
+```
+
+
+# Clean up data in Database
+```{r getdata, }
+
+# store the SQL statement used for accessing the view to a string.
+
+sql_rnmeclmns <- "
+DECLARE
+  v_sql VARCHAR2(1000);
+BEGIN
+  FOR col_rec IN (SELECT column_name 
+                  FROM all_tab_columns
+                  WHERE table_name = 'LEMMON_WATER_USE') LOOP
+    v_sql := 'ALTER TABLE lemmon_water_use RENAME COLUMN ' || col_rec.column_name || ' TO ' || UPPER(col_rec.column_name);
+    EXECUTE IMMEDIATE v_sql;
+  END LOOP;
+END;
+"
+ 
+# assign the query results to a data frame.
+DBI::dbExecute(db0, sql_rnmeclmns)
+
+  
+```
+
+
+# Query Data from database
+Natalie's query and export to excel. 
+```{r query-data, }
+# store the SQL statement used for accessing the view to a string.
+  sql_finalqry <- "
+WITH lemmon_totals AS (
+    SELECT
+        w.prm,
+        t.mtr,
+        SUM(CASE WHEN EXTRACT(YEAR FROM TO_DATE(t.rym, 'YYYYMM')) = 2016 THEN t.tot_use ELSE 0 END) AS use_2016,
+        SUM(CASE WHEN EXTRACT(YEAR FROM TO_DATE(t.rym, 'YYYYMM')) = 2017 THEN t.tot_use ELSE 0 END) AS use_2017,
+        SUM(CASE WHEN EXTRACT(YEAR FROM TO_DATE(t.rym, 'YYYYMM')) = 2018 THEN t.tot_use ELSE 0 END) AS use_2018,
+        SUM(CASE WHEN EXTRACT(YEAR FROM TO_DATE(t.rym, 'YYYYMM')) = 2019 THEN t.tot_use ELSE 0 END) AS use_2019,
+        SUM(CASE WHEN EXTRACT(YEAR FROM TO_DATE(t.rym, 'YYYYMM')) = 2020 THEN t.tot_use ELSE 0 END) AS use_2020
+    FROM
+        loadres.lemmon_water_use w
+    LEFT OUTER JOIN
+        loaddata.loadtransaction1 t
+    ON
+        w.prm = t.prm
+    WHERE
+        EXTRACT(YEAR FROM TO_DATE(t.rym, 'YYYYMM')) BETWEEN 2016 AND 2020
+    GROUP BY  -- Group by premise and meter, I also thought about grouping by service id as well. 
+        w.prm,
+        t.mtr
+    ORDER BY
+        w.prm,
+        t.mtr
+)
+
+SELECT DISTINCT lwu.prm,
+       lwu.mtr, 
+       transaction_info.srvcid,
+       transaction_info.rclass,
+       transaction_info.ssize,
+       lwu.use_2016,
+       lwu.use_2017,
+       lwu.use_2018,
+       lwu.use_2019,
+       lwu.use_2020 
+FROM lemmon_totals lwu
+LEFT OUTER JOIN (
+     SELECT prm
+       , srvcid
+       , rclass
+       , ssize  
+     FROM loaddata.loadtransaction1 
+) transaction_info 
+ON lwu.prm = transaction_info.prm;"
+ 
+# assign the query results to a dataframe.
+  df <- DBI::dbGetQuery(db0, sql_finalqry)
+
+# Make tidy using tidyverse tools
+  df <- as_tibble(df) %>% 
+    rename_with(tolower)
+    
+  
+```
+  
+# Join SQL Data to DBF Data
+
+```{r}
+final_table <- left_join(df, lemmon_water_use, by = "prm")
+
+```
+
+
+# Export to an excel file
+
+```{r}  
+excel_path <- "S:/2023/Lemmon_Wtr_Use/Excel/"
+  
+# Save the data to a rds file.
+write_xlsx(final_table, path = paste0(excel_path, "lemmon_water_use.xlsx"))
+  
+```
+
