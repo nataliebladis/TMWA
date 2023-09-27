@@ -78,8 +78,8 @@ lemmon_water_use<-lemmon_water_use %>%
 
 # informtion on DBI interface is at https://dbi.r-dbi.org/reference/
 # use the DBI interface to connect to oracle database using odbc.
-  db0<- DBI::dbConnect(odbc::odbc(), dsn = "LRDAT0", uid = "loadres", 
-                       pwd = "resload")
+  db0<- DBI::dbConnect(odbc::odbc(), dsn = "XXXX", uid = "XXXX", 
+                       pwd = "XXXX")
 
 # use the DBI interface to connect to SQL Server SDE database using odbc.
 #  db2<- DBI::dbConnect(odbc::odbc(), dsn = "SDE_database")
