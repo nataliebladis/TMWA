@@ -1,0 +1,233 @@
+
+---
+title: "Lead Service Lines Classification"
+author: "Natalie Bladis, Data Analyst Intern"
+date: "2023-08-21"
+output: html_document
+---
+
+Now that a service history and billing history have been established for each premise, a narrative of the services provided to each premise can be created. This narrative will establish if a premise:
+
+-   had a service that existed in the SCIS data,
+-   has a date history that suggests the premise received service prior to January 1st, 1990, and
+-   has a billing history that shows that a meter was retrofit after January 1st, 1990.
+
+```{r include=F}
+# Version 1.0
+# Published date: CCYY-NN-DD
+```
+
+<!-- Setup some global knitr options to control when source code is displayed -->
+
+```{r , setup, include=F}
+knitr::opts_chunk$set(
+  error = TRUE,
+  echo = T,
+  include = TRUE,
+  collapse = TRUE,
+  results = "asis",
+  message = FALSE
+)
+```
+
+<!-- Set up the R working environment by loading libraries and working folder -->
+
+```{r loadlibs,  include=F}
+# Load the required libraries to get the data from the database and work with
+#  the resulting data.frame containing the rights banking data.
+
+ library(tidyverse) # Tidyverse
+ library(lubridate) # Tidyverse library for working with dates.
+# library(odbc)      # ODBC is used to connect to water rights database.
+ library(dplyr)     # tidyverse package for working with dataframes.
+# library(dbplyr)    # tidyverse package for with database tables.
+ library(knitr)     # used to create tables
+ library(writexl)   # used to save the raw data to an Excel workbook.
+ library(stats)
+ library(data.table) # allows working with merge tables by key
+ library(foreign)
+ library(stringr)
+ library(janitor)
+ library(haven)
+ library(readxl)
+#library(gt) # new package to make tables
+
+rm(list = ls()) # clear the workspace of any memory objects.
+#options(digits = 9)
+```
+
+```{r userfunctions, include=FALSE}
+# User defined functions for project
+  fixednum <- function(number) {
+      # takes a number and formats as an integer with commas
+    formatted_num <- format(number, big.mark = ",")
+    return(formatted_num)
+  }
+```
+
+
+### Load Data and Remove Non-residential Premises
+
+
+```{r path-var, }
+# Path and environment variables
+# working data folder
+dpath <- "./Data/"
+
+# In the base inventory w/ history script I save the data as rds files.
+base_inv_active <- read_rds(paste0(dpath, "Base_Inv_Active_with_retrofit.rds"))
+num_prm_base_inv_active_all <- nrow(base_inv_active)
+
+# Remove non-residential premises from the inventory
+# Split into base_inv_active and base_inv_active_non_residential
+
+base_inv_active_non_residential <- base_inv_active %>%
+  filter(!(prm_typ == "RES" | prm_typ == ""))
+num_non_res_prms <- nrow(base_inv_active_non_residential)
+
+base_inv_active <- base_inv_active %>%
+  filter(prm_typ == "RES" | prm_typ == "")
+num_res_prms <- nrow(base_inv_active)
+
+```
+
+The total number of active premises in the base inventory is **`r fixednum(num_prm_base_inv_active_all)`**. **`r fixednum(num_non_res_prms)`** of the premises are not residential premises. The remaining **`r fixednum(num_res_prms)`** residential premises are what we will be classifying as "non-lead" or "lead status unknown".
+
+
+
+### SCIS ID Cut-off
+
+Any premise that has a corresponding SCIS id number must have existed before
+2000. and will be classified as "unknown" which is short for lead status unknown.
+Conversely, any premise without a SCIS id number must have first received
+service after 2000, and therefore will not contain lead, classified as "no lead".  
+
+```{r scis-split, }
+# Classify anything with NA in scis as no lead
+base_inv_active <- base_inv_active %>%  
+  mutate(date_history_status = if_else(is.na(scis), "no lead", "unknown"))
+
+# Count number of no lead and unknown services
+lead_status_counts <- base_inv_active %>%
+  group_by(date_history_status) %>%
+  summarize(count = n())
+
+#print(lead_status_counts)
+
+```
+
+
+### 1990 Cut-off
+
+In the State of Nevada, any construction **after 9/30/1989** was
+required by State law to not contain lead
+(<https://ndep.nv.gov/uploads/documents/2023-05-12-_RLCR_FAQ_-_Final.pdf>).
+The Reason 1: Build Date column of the inventory is recorded as '1' if
+the home was built on or after January 1st, 1990 and '0' if built
+before. The cutoff date was set as January 1st, 1990 instead of October
+1st, 1989 to add a buffer (and out of an abundance of caution). Initial
+service date was used as a proxy for build date.
+
+
+
+```{r filter-unknown, }
+# isolate only records with lead status unknown
+#base_inv_active_unknown <- base_inv_active %>%
+                          # filter(lead_status == "unknown")
+
+#reformat dates
+base_inv_active <- base_inv_active %>%
+                          mutate(physical_connect_date = gsub("-",
+                                                              "",
+                                                              physical_connect_date)) %>%
+                          mutate(min_billyr = ifelse(nchar(min_billyr) == 4,
+                                                      paste0(min_billyr, "0000"),
+                                                      min_billyr))%>%
+                          mutate(max_billyr = ifelse(nchar(max_billyr) == 4,
+                                                      paste0(max_billyr, "0000"),
+                                                      max_billyr))%>%
+                          mutate(across(c(physical_connect_date,
+                                          min_billyr,
+                                          max_billyr,
+                                          init_srv_dt,
+                                          min_srv_date,
+                                          max_srv_date,
+                                          ), as.numeric)) %>%
+                          mutate(date_history_min = pmin(physical_connect_date,
+                                                         min_billyr,
+                                                         max_billyr,
+                                                         init_srv_dt,
+                                                         min_srv_date,
+                                                         max_srv_date,
+                                                         na.rm = TRUE)) %>%
+                          mutate(date_history_status = ifelse(date_history_min >= 19900000,
+                                                      "no lead",
+                                                      "unknown"))
+
+#lead_status_counts <- base_inv_active_unknown %>%
+#  group_by(date_history_status) %>%
+#  summarize(count = n())
+
+#print(lead_status_counts)
+
+
+```
+
+
+
+
+### Meter Retrofit Classification
+
+
+Create the column with retrofit status. If a premise has both a flat rate class
+record (rclass_f) and a metered rate class record (rclass_m) associated with it
+then the premise will be classified as "no lead" because a premise that was
+once flat rate and went to a metered service must have been retrofitted.
+
+```{r retrofit-classification, }
+base_inv_active <- base_inv_active %>%
+  mutate(
+    retrofit_status = ifelse(
+      (!is.na(rclass_f) & !is.na(rclass_m)) & !is.na(min_rym_m > 199001),
+      "no lead",
+      "unknown"
+    )
+  )
+```
+
+
+```{r initial-classification, }
+base_inv_active <- base_inv_active %>%
+  mutate(lead_status = case_when(
+    retrofit_status == "no lead" | date_history_status == "no lead" ~ "no lead",
+    retrofit_status == "unknown" & date_history_status == "unknown" ~ "unknown",
+    TRUE ~ "other"
+  ))
+
+count_result <- base_inv_active %>%
+  count(lead_status)
+
+# Display the count_result
+#print(count_result)
+
+```
+
+
+```{r unique-row, }
+# Ensure that each premise number still corresponds to a unique row
+non_unique_rows <- base_inv_active %>%
+  group_by(prm, service_id) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# Print the non-unique rows
+#print(non_unique_rows)
+```
+
+
+### Final Table
+```{r final-table, }
+final_table <- base_inv_active %>%
+  select(prm, scis, date_history_min, date_history_status, rclass_f, min_rym_f, max_rym_f, rclass_m, min_rym_m, max_rym_m, retrofit_status, lead_status)
+
+```
