@@ -1,0 +1,378 @@
+
+title: "Get the Lead Out Classification"
+date:  "`r format(Sys.Date(), '%B %d, %Y')`"
+author: "Natalie Bladis, Data Analyst Intern and Shawn Stoddard, Senior Resource Economist"
+output:
+  #pdf_document
+  html_document
+editor_options:
+  markdown:
+    wrap: 80
+---
+
+```{r include=F}
+# Version 1.0
+# Published date: CCYY-NN-DD
+```
+
+<!-- Setup some global knitr options to control when source code is displayed -->
+
+```{r , setup, include=F}
+knitr::opts_chunk$set(
+  error = TRUE,
+  echo = T,
+  include = TRUE,
+  collapse = TRUE,
+  results = "asis",
+  message = FALSE
+)
+```
+
+<!-- Set up the R working environment by loading libraries and working folder -->
+
+```{r loadlibs,  include=F}
+# Load the required libraries to get the data from the database and work with
+#  the resulting data.frame containing the rights banking data.
+
+ library(tidyverse) # Tidyverse
+ library(lubridate) # Tidyverse library for working with dates.
+ library(odbc)      # ODBC is used to connect to water rights database.
+ library(dplyr)     # tidyverse package for working with dataframes.
+ library(dbplyr)    # tidyverse package for with database tables.
+ library(knitr)     # used to create tables
+ library(writexl)   # used to save the raw data to an Excel workbook.
+ library(stats)
+ library(data.table) # allows working with merge tables by key
+ library(foreign)
+ library(stringr)
+ library(janitor)
+library(haven)
+library(readxl)
+#library(gt) # new package to make tables
+
+rm(list = ls()) # clear the workspace of any memory objects.
+#options(digits = 9)
+```
+
+```{r userfunctions, }
+# User defined functions for project
+  fixednum <- function(number) {
+      # takes a number and formats as an integer with commas
+    formatted_num <- format(number, big.mark = ",")
+    return(formatted_num)
+  }
+
+```
+
+## Notes
+To classify the lead status of a service as "Non-Lead" or "Unknown", four types
+of rules and sets of data were considered. The overall logic for the
+classification strategy is laid out below:
+
+1.    **Facility / billing system dates**   -   This is the set of dates that
+identifies
+when services have been installed or retired.
+2.    **Billing activities**    –   this like a change from flat rate billing
+to metered
+billing.
+3.    **Assessor’s data**   -   on when a building was built and we can assume
+that if there
+was lead pipping the pipes have been replaces as required by plumbing codes.
+4.    **NVEPA criteria**    -   These are the rule that NvEPA gives us a
+guidance.
+
+## Load in inventory data
+
+```{r read-base-inventory, }
+# Read Excel file
+pathname <- "S:/2023/Lead_ServiceLines/Excel/Base_Inventory.xlsx"
+base_inv_active <- as.tibble(read_excel(pathname,1)) %>%
+                  mutate(
+                    physical_connect_date = gsub("-", "", physical_connect_date)
+                    )
+base_inv_retire <- as.tibble(read_excel(pathname,2))
+```
+
+#### Inital Service Date Research
+
+In order to establish the earliest known date an active premise could have
+received water service a record of as many dates associated with each premise
+will be added to the base inventory. This date history will include as many of
+the dates as possible from the following list:
+
+-  Build date from "S:/2000_DataSetLib/AssessorData/QuickInfo.dta"
+-  Initial Service Date from "S:/2023/Lead_ServiceLines/Excel/Base_Inventory.xlsx"
+-  Physical Connect Date from "S:/2023/Lead_ServiceLines/Excel/Base_Inventory.xlsx"
+-  Date Install (DTEINST) from "S:/2100_Areas/Banner_Files/scis/bhall/bhall.dbf"
+-  Service Start Date (SSDAT) from "S:/2100_Areas/Banner_Files/scis/bhall/bhall.dbf"
+
+After this date history is compiled, the earliest date on record will be
+recorded for each premise. One thing to note, the earliest electronic records
+were created for premises was likely around 1985 (give or take a few years). All
+earlier records would have been originally physical and may or may not have been
+digitized at some point.
+
+Adding in assessors build date to base inventory
+
+## Get Assessors Data
+
+**NOTES FROM SHAWN**
+
+-   To get to using Assessor’s data you need to first join in the service
+location data.
+
+      -   **S:/2000_DataSetLib/ServiceLocations/Services_Locations.dta**
+
+      -   You can join the data on srvcid field.  Then you can merge over the
+      parcel number apn for each water service.
+     
+-   Then you can link to Assessor’s data files located in
+**S:/2000_DataSetLib/AssessorData/**  These files are of the same time period as
+the billing data that we are using.
+
+-   There two key assessor files that might be helpful.  
+      -   **Property.dta** is base data on the parcel.  
+      -   **QuickInfo.dta** is the second file. It contains detail information
+            on all the buildings on a parcel.
+
+-   More complete information on the assessor’s files can also be found in
+**S:/2021/AssessorData_2021**.  This is the raw import and processing of the data
+before I placed a copy in the library.
+
+-   One variable that you should add to the service data is the subdivision name.  
+I think that will come in handy at some point.
+
+
+
+```{r get-assessor-data, }
+# Load Service_Locations Data
+dpub <- "S:/2000_DataSetLib/ServiceLocations/"
+#        S:\2000_DataSetLib\ServiceLocations
+# working data folder
+dpath <- "./Data/"
+
+serv_locations <- as.tibble(read.dbf(paste0(dpub,
+                                            "Service_Locations.dbf"))) %>%
+                            select(srvcid, apn)
+saveRDS(serv_locations, paste0(dpath, "Serv_locations.rds"))
+
+# Load Property Data
+adpub <- "S:/2000_DataSetLib/AssessorData/"
+property_data <- as.tibble(read.csv(paste0(adpub,
+                                            "Property.csv"))) %>%
+                          select(parcelid, apn, subdivision)
+saveRDS(property_data, paste0(dpath, "property_data.rds"))
+
+# Load QuickInfo.dta
+# NOTE: parcelid is the same as APN
+assessor_data <- as.tibble(read.csv(paste0(adpub,
+                                            "QuickInfo.csv"))) %>%
+                select(parcelid, yearblt)
+saveRDS(assessor_data, paste0(dpath, "assessor_data.rds"))
+
+# Join data
+base_inv_active <- base_inv_active %>%
+  left_join(serv_locations, by = c("service_id" = "srvcid")) %>%
+  left_join(property_data, by = "apn") %>%
+  left_join(assessor_data, by = "parcelid")
+
+```
+
+
+Adding in Install Date (DTEINST) and Start Date (SSDAT) from the SCIS-Banner data.
+
+```{r get-banner-scis, }
+# Read in Banner to SCIS files  
+bhpath <- "S:/2100_Areas/Banner_Files/scis/billing_2000/"
+bhallpath <- "S:/2100_Areas/Banner_Files/scis/bhall/"
+
+scisban_history <- as_tibble(read.dbf(paste0(bhpath, "scisban.dbf"), as.is = FALSE)) %>%
+    rename_all(tolower) %>%
+    select(scis_an, premid)
+
+bhall_history <- as_tibble(read.dbf(paste0(bhallpath, "bhall.dbf"), as.is = FALSE)) %>%
+    rename_all(tolower) %>%
+    mutate(across(c(dteinst, ssdat), as.character)) %>%
+    select(scis_an, dteinst, ssdat)
+
+sb_history <- bhall_history %>%
+                  left_join(scisban_history,
+                           by = join_by("scis_an" == "scis_an"))
+
+# Find the minimal ssdat and minimal install date for each premise
+min_dates <- sb_history %>%
+  group_by(premid) %>%
+  summarize(min_ssdat = min(ssdat), min_dteinst = min(dteinst)) %>%
+  mutate(premid = as.numeric(premid))
+
+# Join on premid
+base_inv_active <- base_inv_active %>%
+                  left_join(min_dates,
+                           by = join_by("prm" == "premid"))
+
+```
+
+
+
+**INITIAL THOUGHTS ABOUT DATE HISTORY RESEARCH** - NATALIE 8/10/2023
+-   Some minimum start dates for a premise are older than the build date
+associated with that premise from assessors data.
+
+- Looking at the total number of services now in the bsae_inv_active, it's
+increased significantly so one of these joins is likely incorrect or needs
+adjustment.
+
+-   Next week, I need to:
+          -     Make formatting on all dates to compare the same
+                  -     Same number of characters for year (4)
+                 
+                  -     No YYYY-MM-DD
+                 
+                  -     as numeric for all
+          -     Make a new column that finds the minimal date of all of these
+          dates for each row(premise id)
+
+
+
+
+
+
+### Reason 1: Initial Service Date
+
+In the State of Nevada, any construction **after 9/30/1989** was
+required by State law to not contain lead
+(<https://ndep.nv.gov/uploads/documents/2023-05-12-_RLCR_FAQ_-_Final.pdf>).
+The Reason 1: Build Date column of the inventory is recorded as '1' if
+the home was built on or after January 1st, 1990 and '0' if built
+before. The cutoff date was set as January 1st, 1990 instead of October
+1st, 1989 to add a buffer (and out of an abundance of caution). Initial
+service date was used as a proxy for build date.
+
+```{r initial-service-date, }
+base_inv_active <- base_inv_active  %>%
+  mutate(bltaftr_1990 = case_when(
+    init_srv_dt <= 19891231 ~ 0,
+    init_srv_dt >= 19900101 ~ 1,
+    ))
+
+blt_after_total <- sum(base_inv_active$bltaftr_1990)
+blt_before_total <- nrow(base_inv_active) - blt_after_total
+```
+
+Total number of premises built **before 1990 is
+`r fixednum(blt_before_total)`**
+
+Total number built **after 1990 is `r fixednum(blt_after_total)`**.
+
+Total built before 1990 + total built after 1990 =
+**`r fixednum(blt_after_total+blt_before_total)`**
+
+
+### Reason 2: Physical connect date
+
+If a premise was retrofitted with a meter after January 1st, 1990 the
+premise can be considered lead free. Reason 2: Retrofitted is input as
+'1' if the premise was retrofit after the cut off date and '0' if it was
+not retrofit after that date.
+
+```{r}
+base_inv_active <- base_inv_active  %>%
+     mutate(physical_connect_date = as.numeric(format(as.Date(physical_connect_date, format = "%Y-%m-%d"), "%Y%m%d"))) %>%
+  mutate(connect_aftr_1990 = case_when(
+    is.na(physical_connect_date) ~ 0,
+    physical_connect_date <= 19891231 ~ 0,
+    physical_connect_date >= 19900101 ~ 1,
+    ))
+
+cnnct_after_total <- sum(base_inv_active$connect_aftr_1990)
+cnnct_before_total <- nrow(base_inv_active) - cnnct_after_total
+```
+
+Total number of premises connected **before 1990 is
+`r fixednum(cnnct_before_total)`**
+
+Total number connected **after 1990 is
+`r fixednum(cnnct_after_total)`**.
+
+Total built before 1990 + total built after 1990 =
+**`r fixednum(cnnct_after_total+cnnct_before_total)`**
+
+### Reason 3: Pipe size
+
+Pipes larger than 2 inches are considered to be lead free. The binary
+variable "bigger_than_2in" is input as '1' if a service is known to have
+a pipe larger than or equal to 2", and '0' if the pipe is smaller than
+2" or the pipe size is not recorded ('NA').
+
+The variable service_size_type denotes the size of the services on a
+premise as by representing a 3/4" pipe as 75, a 1 inch pipe as 100, a 2
+inch pipe as 200, etc. The service_size_type variable may also end in a
+character F(fire flow) or T(turbo meter).
+
+```{r pipe-size, }
+# Remove T and F from end of service_size_type, make it a numeric variable
+
+base_inv_active <- base_inv_active %>%
+  mutate(service_size_type = as.numeric(gsub("[TF]", "", service_size_type))) %>%
+  mutate(bigger_than_2in = case_when(
+    is.na(service_size_type) ~ 0,
+    service_size_type < 200 ~ 0,
+    service_size_type >= 200 ~ 1
+  ))
+
+total_bigger2 <- sum(base_inv_active$bigger_than_2in)
+total_smaller2 <- nrow(base_inv_active) - total_bigger2
+```
+
+Total number of premises with a service size type **less than 2 inches
+is `r fixednum(total_smaller2)`**
+
+Total number **greater than or equal to 2 inches is
+`r fixednum(total_bigger2)`**.
+
+Total less than 2 and greater than or equal to 2 is
+**`r fixednum(total_bigger2+total_smaller2)`**
+
+### Final Lead or Non-lead Classification
+
+For the final Lead or Non-lead Classification, the sum of all the binary
+variables that represent reasons a service could be lead or non-lead
+above will be computed, and if that sum is greater than 0, then the
+service will be labeled Non-lead. If the sum is 0, then the service will
+be labeled "Lead".
+
+```{r classification, }
+# Add up the values of each "reason" column and classify as lead or non lead
+base_inv_active <- base_inv_active %>%
+  mutate(sum_bool = bltaftr_1990 + connect_aftr_1990, bigger_than_2in) %>%
+  mutate(classification = ifelse(sum_bool == 0, "lead", "non-lead")) %>%
+  select(-sum_bool)  # Optional: remove the intermediate sum column
+
+# Compute total number services lead or non lead
+totals <- base_inv_active %>%
+  group_by(classification) %>%
+  summarize(total = n())
+
+print(totals)
+
+```
+
+The current number of services classified as lead or non-lead are as
+follows:
+
+**Lead = `r totals[1,2]`**
+
+**Non-lead = `r totals[2,2]`**
+
+### Export Inventory with classificaitons to Excel
+
+The base inventory is exported to Excel workbook for ease of review.
+
+```{r export-xlsx, eval=FALSE, include=FALSE}
+# export the base inventory
+write_xlsx(list(base_active = base_inv_active),
+           path = paste0("./Excel/", "Classification.xlsx"),
+           col_names = T,
+           format_headers = T
+           )
+```
