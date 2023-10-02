@@ -1,0 +1,479 @@
+---
+title: "Lead Service Lines - Metered Services"
+author: "Natalie Bladis, Data Analyst Intern"
+date: "2023-08-21"
+output: html_document
+---
+
+### Introduction
+In this script, the base inventory will be updated to include data demonstrating
+whether a flat rate service was updated to a metered service.
+
+
+```{r include=F}
+# Version 1.0
+# Published date: CCYY-NN-DD
+```
+
+<!-- Setup some global knitr options to control when source code is displayed -->
+
+```{r , setup, include=F}
+knitr::opts_chunk$set(
+  error = TRUE,
+  echo = T,
+  include = TRUE,
+  collapse = TRUE,
+  results = "asis",
+  message = FALSE
+)
+```
+
+<!-- Set up the R working environment by loading libraries and working folder -->
+
+```{r loadlibs,  include=F}
+# Load the required libraries to get the data from the database and work with
+#  the resulting data.frame containing the rights banking data.
+
+ library(tidyverse) # Tidyverse
+ library(lubridate) # Tidyverse library for working with dates.
+ library(odbc)      # ODBC is used to connect to water rights database.
+ library(dplyr)     # tidyverse package for working with dataframes.
+ library(dbplyr)    # tidyverse package for with database tables.
+ library(knitr)     # used to create tables
+ library(writexl)   # used to save the raw data to an Excel workbook.
+ library(stats)
+ library(data.table) # allows working with merge tables by key
+ library(foreign)
+ library(stringr)
+ library(janitor)
+library(haven)
+#library(gt) # new package to make tables
+
+rm(list = ls()) # clear the workspace of any memory objects.
+#options(digits = 9)
+```
+
+```{r userfunctions, }
+# User defined functions for project
+  fixednum <- function(number) {
+      # takes a number and formats as an integer with commas
+    formatted_num <- format(number, big.mark = ",")
+    return(formatted_num)
+  }
+
+```
+
+```{r db-connect, echo=FALSE}
+# use the DBI interface to connect to oracle database using odbc.
+  db0<- DBI::dbConnect(odbc::odbc(), dsn = "LRDAT01", uid = "SHAWN", pwd = "shawn")
+
+# use the DBI interface to connect to oracle database using odbc.
+  db1<- DBI::dbConnect(odbc::odbc(), dsn = "LRDAT0", uid = "SHAWN", pwd = "shawn")
+
+# use the DBI interface to connect to SQL Server SDE database using odbc.
+#  db2<- DBI::dbConnect(odbc::odbc(), dsn = "SDE_database")
+
+```
+
+### Query Flat Rate Services
+
+```{r query-flat-rates, }
+
+# store the SQL statement used for accessing the view to a string.
+ # sql_stm <- "select prm, srvcid, utl,
+  #                   min(rym) as min_rym, max(rym) as max_rym, count(*) as rcnt
+   #           from loaddata.loadtransaction1 lr1
+    #          group by prm, srvcid, utl;"
+
+
+sql_stm <- "with loaddat as
+                        ( select a.prm
+                                ,a.srvcid
+                                ,a.utl
+                                ,a.ssize
+                                ,a.rclass
+                                ,a.rate_sch
+                                ,a.rym
+                         from loaddata.loadtransaction1 a
+                         where rclass not in
+                               ('COM',  'FSPR', 'GMWD', 'GMWS', 'GOV',  'IWSC', 'LVS',
+                                'MIS',  'MISD', 'MISG', 'MMWD', 'MMWS', 'NPST', 'NPSU',
+                                'RMWD', 'RMWG', 'RMWS', 'TMWA')
+                                )
+
+                         select b.prm
+                                ,b.srvcid
+                                ,b.utl
+                                ,b.ssize
+                                ,b.rclass
+                                ,b.rate_sch
+                                ,min(b.rym) as min_rym
+                                ,max(b.rym) as max_rym
+                                ,count(*)   as rcnt_rym
+                         from loaddat b
+                         group by b.prm
+                                ,b.srvcid
+                                ,b.utl
+                                ,b.ssize
+                                ,b.rclass
+                                ,b.rate_sch
+                         ;"
+
+# assign the query results to a dataframe.
+  df <- DBI::dbGetQuery(db1, sql_stm)
+
+# Make tidy using tidyverse tools
+  Query_FlatRates <- as_tibble(df) %>%
+    mutate(loadrec = 1, .before = PRM)%>%
+    rename_with(tolower)
+   
+dpath <- "./Data/"
+fname <- "Query_FlatRates"
+ 
+# Save the data to a rds file.
+  saveRDS(Query_FlatRates, file = paste0(dpath,fname,".rds"))
+```
+
+
+```{r read-FlatRates, }
+# Create a dataframe for the flat rate data
+FlatRates <- as_tibble(read_rds(paste0(dpath, "Query_FlatRates.rds"))) %>%
+                      rename( utl_f = utl,
+                      ssize_f = ssize,
+                      rclass_f = rclass,
+                      rate_sch_f = rate_sch,
+                      min_rym_f = min_rym,
+                      max_rym_f = max_rym,
+                      rcnt_rym_f = rcnt_rym) %>%
+                      mutate(prm = as.numeric(prm))
+
+```
+
+
+### Query Prem Date Range
+
+```{r query-flat-rates-dates, }
+sql_stm <- "select a.prm
+                   ,min(a.rym) as prm_minrym
+                   ,max(a.rym) as prm_maxrym
+                   ,count(*)   as prm_cntrym
+            from loaddata.loadtransaction1 a
+            group by a.prm
+            order by 4
+            ;"
+
+# assign the query results to a dataframe.
+  df <- DBI::dbGetQuery(db1, sql_stm)
+
+# Make tidy using tidyverse tools
+  Query_Prem_DateRange <- as_tibble(df) %>%
+    rename_with(tolower)
+   
+dpath <- "./Data/"
+fname <- "Prem_DateRange"
+ 
+# Save the data to a rds file.
+  saveRDS(Query_Prem_DateRange, file = paste0(dpath,fname,".rds"))
+```
+
+
+```{r read-Prem-DateRange, }
+Prem_DateRange <- as_tibble(read_rds(paste0(dpath, "Prem_DateRange.rds")))
+
+```
+
+
+### Query Metered Services
+```{r query-metered-rates, }
+
+sql_stm <- "with loaddat as
+                        ( select a.prm
+                                ,a.srvcid
+                                ,a.utl
+                                ,a.ssize
+                                ,a.rclass
+                                ,a.rate_sch
+                                ,a.rym
+                         from loaddata.loadtransaction1 a
+                         where rclass in
+                               ('COM',  'FSPR', 'GMWD', 'GMWS', 'GOV',  'IWSC', 'LVS',
+                                'MIS',  'MISD', 'MISG', 'MMWD', 'MMWS', 'NPST', 'NPSU',
+                                'RMWD', 'RMWG', 'RMWS', 'TMWA')
+                                )
+
+                         select b.prm
+                                ,b.srvcid
+                                ,b.utl
+                                ,b.ssize
+                                ,b.rclass
+                                ,b.rate_sch
+                                ,min(b.rym) as min_rym
+                                ,max(b.rym) as max_rym
+                                ,count(*)   as rcnt_rym
+                         from loaddat b
+                         group by b.prm
+                                ,b.srvcid
+                                ,b.utl
+                                ,b.ssize
+                                ,b.rclass
+                                ,b.rate_sch
+                         ;"
+
+# assign the query results to a dataframe.
+  df <- DBI::dbGetQuery(db1, sql_stm)
+
+# Make tidy using tidyverse tools
+  Query_MeteredRates <- as_tibble(df) %>%
+    rename_with(tolower)
+   
+dpath <- "./Data/"
+fname <- "MeteredRates"
+ 
+# Save the data to a rds file.
+  saveRDS(Query_MeteredRates, file = paste0(dpath,fname,".rds"))
+```
+
+
+```{r read-metered, }
+MeteredRates <- read_rds(paste0(dpath, "MeteredRates.rds")) %>%
+                      rename( utl_m = utl,
+                      ssize_m = ssize,
+                      rclass_m = rclass,
+                      rate_sch_m = rate_sch,
+                      min_rym_m = min_rym,
+                      max_rym_m = max_rym,
+                      rcnt_rym_m = rcnt_rym) %>%
+                      mutate(prm = as.numeric(prm))
+
+# inspecting the repeated premise numbers
+non_unique_rows <- MeteredRates %>%
+  group_by(prm, srvcid) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# Print the non-unique rows
+# print(non_unique_rows)
+
+```
+
+**Extension _f on a variable name means it came from flat rate service data, while extension _m indicates information that came from a metered service.**
+
+### Add flat rate and metered data to Base Inventory
+
+```{r load-base-inv, }
+dpath <- "./Data/"
+
+# In the base inventory w/ history script I save the data as rds files.
+base_inv_active <- read_rds(paste0(dpath, "Base_Inv_Active_with_History.rds"))
+
+
+
+# add in blank columns for meter retrofit data
+#base_inv_active <- base_inv_active %>%
+#mutate(
+#  retrofit = NA,
+#    flat_rte_clss = NA,
+#    f_dte_min = NA,
+#    f_dte_max = NA,
+#   meter_rte_clss = NA,
+#    m_dte_min = NA,
+#    m_dte_max = NA
+#  )
+```
+
+
+```{r join-flat-rates, }
+
+# Join base_inv_active with FlatRates
+joined_data <- base_inv_active %>%
+  left_join(FlatRates, by = c("prm"= "prm", "service_id" = "srvcid"))
+
+# Filter for rows with the highest f_dte_max within each prm
+filtered_data <- joined_data %>%
+  group_by(prm, service_id) %>%
+  slice(which.max(max_rym_f)) %>%
+  ungroup()
+
+# Select the relevant columns
+filtered_data <- filtered_data %>%
+  select(prm, service_id, rclass_f, min_rym_f, max_rym_f)
+
+# Update base_inv_active with the filtered data
+base_inv_active <- base_inv_active %>%
+  left_join(filtered_data, by = c("prm"= "prm", "service_id" = "service_id"))
+
+```
+
+
+
+```{r join-meterd, }
+# Join base_inv_active with MeteredRates
+joined_data <- base_inv_active %>%
+  left_join(MeteredRates, by = c("prm"= "prm", "service_id" = "srvcid"))
+
+# Filter for rows with the highest f_dte_max within each prm
+filtered_data <- joined_data %>%
+  group_by(prm, service_id) %>%
+  slice(which.min(min_rym_m)) %>%
+  ungroup()
+
+# Select the relevant columns
+filtered_data <- filtered_data %>%
+  select(prm, service_id, rclass_m, min_rym_m, max_rym_m)
+
+# Update base_inv_active with the filtered data
+base_inv_active <- base_inv_active %>%
+  left_join(filtered_data, by = c("prm"= "prm", "service_id" = "service_id"))
+
+```
+
+
+
+
+### Add in data from base_inv_retired
+
+```{r add-base-retired, }
+
+# Read in base inventory inactive data
+base_inv_retired <- read_rds(paste0(dpath, "Base_Inv_Retired.rds"))
+
+# filter out anything that's not residential
+base_inv_retired <- base_inv_retired %>%
+                      filter(prm_typ == "RES" | prm_typ == "") %>%
+                      select( "prm",
+                              "prm_typ",
+                              "service_id",
+                              "service_type",
+                              "service_size_type",
+                              "physical_connect_date",
+                              "physical_disconnect_date") %>%
+                      mutate(prm = as.numeric(prm),
+                             physical_connect_date = gsub("-", "", physical_connect_date),
+                             physical_disconnect_date = gsub("-", "", physical_disconnect_date))
+
+```
+
+
+
+
+```{r retired-sql-add, }
+
+sql_stm <- " with base as
+            (select t.prm, t.srvcid, t.rclass, t.ssize, t.utl,
+                min(t.rym) as min_rym,
+                max(t.rym) as max_rym
+            from loaddata.loadtransaction1 t
+            where t.utl = 'U'
+            group by t.prm, t.srvcid, t.rclass, t.ssize, t.utl
+            ),
+            max_rym as
+                (
+                select  b.prm, b.srvcid, b.rclass, b.ssize, b.min_rym, b.max_rym,
+                  count(*) over(partition by b.srvcid) as scnt,
+                  max(b.max_rym) over(partition by b.srvcid) as max_max_rym
+                from base b
+                order by 7 desc, 2, min_rym, max_rym
+                )
+            select *
+
+            from (
+                 select m.srvcid, m.rclass, m.ssize, m.max_rym,
+                          count(*) over(partition by m.srvcid) as scnt
+                  from max_rym m
+                 where m.max_rym = m.max_max_rym ) a
+     
+            where a.scnt = 1;"
+
+# assign the query results to a dataframe.
+  df <- DBI::dbGetQuery(db1, sql_stm)
+
+# Make tidy using tidyverse tools
+  retired_add_data <- as_tibble(df) %>%
+    rename_with(tolower)
+   
+dpath <- "./Data/"
+fname <- "retired_data_to_add"
+ 
+# Save the data to a rds file.
+  saveRDS(retired_add_data, file = paste0(dpath,fname,".rds"))
+```
+
+
+
+```{r join-retired-add, }
+# read in retired to add
+retired_to_add <- as_tibble(read_rds(paste0(dpath, "retired_data_to_add.rds")))  %>%
+                  mutate(max_rym = paste0(max_rym, "00")) %>%
+                  select(-scnt)
+
+base_inv_retired <-  base_inv_retired %>%
+                     left_join(retired_to_add, by = c("service_id" = "srvcid"))
+```
+
+
+
+```{r retired-counts, }
+### GOAL: Get base_inv_retired down to one row per premise.
+### Then: join to base_inv_active
+
+base_inv_retired <- base_inv_retired %>%
+  group_by(prm) %>%
+  arrange(desc(physical_disconnect_date), physical_connect_date) %>%
+  slice(1) %>%
+  ungroup()
+
+## Count unique prem to compare to length
+prm_count <- length(unique(base_inv_retired$prm))
+base_inv_retired_length <- nrow(base_inv_retired)
+```
+
+
+Use the retired data to fill in the missing flat rate information.
+```{r join-retired, }
+
+base_inv_active <- base_inv_active %>%
+  left_join(base_inv_retired, by = c("prm")) %>%
+  mutate(
+    rclass_f = ifelse(!is.na(service_type.y), service_type.y, rclass_f),
+    min_rym_f = ifelse(!is.na(physical_connect_date.y), physical_connect_date.y, min_rym_f),
+    max_rym_f = ifelse(!is.na(physical_disconnect_date.y), physical_disconnect_date.y, max_rym_f)
+  )
+
+```
+
+Everything looking good, now to clean up.
+
+```{r clean-base, }
+base_inv_active <- base_inv_active %>%
+                    select("prm",
+                           "init_srv_dt",
+                           "prm_status",
+                           prm_typ = "prm_typ.x",
+                           "address_line_1",
+                           "city",
+                           "state",
+                           "postal_code",
+                           service_id = "service_id.x",
+                           service_type = "service_type.x",
+                           service_size_type = "service_size_type.x",
+                           physical_connect_date = "physical_connect_date.x",
+                           physical_disconnect_date = "physical_disconnect_date.x",
+                           "scis",
+                           "min_billyr",
+                           "max_billyr",
+                           "min_srv_date",
+                           "max_srv_date",
+                           "rclass_f",
+                           "min_rym_f",
+                           "max_rym_f",                
+                           "rclass_m",
+                           "min_rym_m",
+                           "max_rym_m")
+
+```
+
+### Export Base Inventory with Retrofit Data
+
+```{r export-data, }
+saveRDS(base_inv_active, file = paste0(dpath, "Base_Inv_Active_with_retrofit.rds"))
+```
