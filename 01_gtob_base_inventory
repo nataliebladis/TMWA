@@ -1,0 +1,293 @@
+---
+title: "Get the Lead Out Base Inventory"
+date:  "`r format(Sys.Date(), '%B %d, %Y')`"
+author: "Natalie Bladis, Data Analyst Intern and Shawn Stoddard, Senior Resource Economist"
+output:
+  #pdf_document
+  html_document
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r include=F}
+# Version 1.0
+# Published date: CCYY-NN-DD
+```
+
+<!-- Setup some global knitr options to control when source code is displayed -->
+
+```{r , setup, include=F}
+knitr::opts_chunk$set(
+  error = TRUE,
+  echo = T,
+  include = TRUE,
+  collapse = TRUE,
+  results = "asis",
+  message = FALSE
+)
+```
+
+<!-- Set up the R working environment by loading libraries and working folder -->
+
+```{r loadlibs,  include=F}
+# Load the required libraries to get the data from the database and work with
+#  the resulting data.frame containing the rights banking data.
+
+ library(tidyverse) # Tidyverse
+ library(lubridate) # Tidyverse library for working with dates.
+ library(odbc)      # ODBC is used to connect to water rights database.
+ library(dplyr)     # tidyverse package for working with dataframes.
+ library(dbplyr)    # tidyverse package for with database tables.
+ library(knitr)     # used to create tables
+ library(writexl)   # used to save the raw data to an Excel workbook.
+ library(stats)
+ library(data.table) # allows working with merge tables by key
+ library(foreign)
+ library(stringr)
+ library(janitor)
+ library(haven)
+#library(gt) # new package to make tables
+
+rm(list = ls()) # clear the workspace of any memory objects.
+#options(digits = 9)
+```
+
+```{r userfunctions, }
+# User defined functions for project
+  fixednum <- function(number) {
+      # takes a number and formats as an integer with commas
+    formatted_num <- format(number, big.mark = ",")
+    return(formatted_num)
+  }
+
+```
+
+## Notes
+
+Original script written by Natalie. This script is modified by Shawn to
+improve readability, add clarity, and save or export results as needed.
+
+## Data File Locations
+
+-   **S:/2000_DataSetLib** folder is a collection of published datasets.
+    -   **./BillingDataECIS/** folder contains copies of all the ECIS
+        database tables stored as STATA dta files. You can read these
+        into R using library(Haven), part of the tidyverse. The function
+        is read_dta()\
+    -   **./LoadData2015 & 2016** here you will find my load files that
+        I talk about. In 2016, a new file was started due to size and
+        discontinuation of some flat rate classes. The 2015 and 2016
+        tables are designed to be appended when needed. They are big.\
+-   **S:/2100_Areas/Banner_Files/scis/billing_2000/** is the path to a
+    collection of files that link old SCIS data to banner (Banner was
+    the system used by SPPC in 2001 and provided data to TMWA in 2002).
+    Most of these started as texts files and were imported into MS
+    FroPro and saved as .DBFs. These .DBFs are standard dBase IV type
+    files created and used by MS FoxPro. You can read these with any
+    functions that read dbf type files. Files with PRG extension are
+    FoxPro scripts. They are just text files, and the commands are very
+    English like.
+
+Customer, Accounts, Premises, and Services in ECIS will be the key data
+to build the base inventory for lead / nonlead services. Most of the
+table names used in the documents are the same as files in
+**./BillingDataECIS/**.
+
+## Loading Data from ECIS
+
+```{r get-ecis-data, }
+# In this chunk, I simplfy the code by useing a common path variable and the
+# paste0() to access data files.
+
+# In the initial data load it is a good idea to follow with a select() to
+# keep only the fields that are needed.
+
+datapub <- "S:/2023/Load_build/DataPub/"
+# working data folder
+dpath <- "./Data/"
+
+# Load customer master table
+cus <- as_tibble(readRDS(paste0(datapub, "ucus.rds")))
+saveRDS(cus, paste0(dpath, "cus.rds"))
+
+#Load Customer Address Association
+ucusaddr <- as_tibble(readRDS(paste0(datapub, "ucusaddr.rds")))
+saveRDS(ucusaddr, paste0(dpath, "ucusaddr.rds"))
+
+# when working with the premise id, it is easier to convert to integers.
+# Load Premise Master Table
+uprm <- as_tibble(readRDS(paste0(datapub, "uprm.rds"))) %>%
+  select(prm, init_srv_dt, discont_dt, prm_status, prm_typ) %>%
+  filter(prm_status != "DU" & discont_dt == 0) %>%
+  filter(prm_status != "PN") %>% # pending premises are brand new w/ no service
+  filter(init_srv_dt > 0 & prm_status != "VC") %>% # Not date and vacant is a lot.
+  mutate(prm = as.integer(prm),
+         discont_dt = NULL
+         )
+saveRDS(uprm, paste0(dpath, "uprm.rds"))
+
+# Load premise address association table.
+uprmaddr <- as_tibble(readRDS(paste0(datapub, "uprmaddr.rds"))) %>%
+  select(premises_id, address_id, end_date) %>%
+  filter(is.na(end_date)) %>%
+  mutate(premises_id = as.integer(premises_id),
+         end_date = NULL
+         )
+saveRDS(uprmaddr, paste0(dpath, "uprmaddr"))
+
+# Load Service Master Table  
+uservice <- as_tibble(readRDS(paste0(datapub, "uservice.rds"))) %>%
+  select(service_id, premises_id, service_type, service_size_type,
+         physical_connect_date, physical_disconnect_date) %>%
+  mutate(premises_id = as.integer(premises_id))
+
+# Load Address Master Table
+uaddress_prm <- as_tibble(readRDS(paste0(datapub, "uaddress.rds"))) %>%
+  select(address_id:postal_code) %>%
+  filter(premises_address == 1) %>%
+  select(address_id, address_line_1:postal_code)
+
+##### Potentially don't need the files below this: #####
+#ECISPremList_filename <- "S:\\2023\\Load_Build\\Data\\ECISPremList.rds"
+#ECISPremLis <- as_tibble(readRDS(ECISPremList_filename))
+
+#ECISServicesXY_filename <- "S:\\2023\\Load_Build\\Data\\ECISServicesXY.rds"
+#ECISServicesXY <- as_tibble(readRDS(ECISServicesXY_filename))
+
+```
+
+```{r get-banner-scis, }
+# Read in Banner to SCIS files  
+bhpath <- "S:/2100_Areas/Banner_Files/scis/billing_2000/"
+
+bh2000 <- as_tibble(read.dbf(paste0(bhpath, "bh2000.dbf"), as.is = FALSE))
+bhnames <- as_tibble(read.dbf(paste0(bhpath, "bhnames.dbf"), as.is = FALSE))
+scisban <- as_tibble(read.dbf(paste0(bhpath, "scisban.dbf"), as.is = FALSE))
+
+services_scisban <- as_tibble(read.dbf(paste0(bhpath, "services.dbf"),
+                                       as.is = FALSE)) %>%
+    rename_with(tolower) %>%
+    select(premid,scis_an, dteinst, ssdat, meterseq, svcno, mtrtysz, billsize,
+           ratecd, rate_cls)
+```
+
+## Start Building the Base Inventory
+
+The initial inventory will start with ECIS premises and services. We
+only need to keep premises that still have water services delivering
+water.
+
+### Build an Initial Premise Inventory from ECIS Data
+
+The base inventory starts with a list of premises that meet the
+following:\
+- Premise status is not "DU\
+- Premise disconnect date is zero\
+- Premise status is not"PN" (pending)\
+- Initial date is greater than zero and status != "VC"
+
+The initial list of premises contains `r fixednum(nrow(uprm))` records.
+
+The premise information required is:
+
+-   Premise ID\
+-   Initial service date\
+-   Premise type\
+-   Premise address
+
+```{r add-premises-address, }
+# To add the address to each of premises, we need to do a left outer join
+# the uprmaddr table.
+base_1 <- uprm %>%
+    left_join(uprmaddr,
+              by = join_by("prm" == "premises_id")) %>%
+    left_join(uaddress_prm,
+              by = join_by(address_id == address_id),
+              keep = F
+              ) %>%
+    mutate(address_id = NULL,
+           address_line_2 = NULL)
+```
+
+### Join service data to base inventory
+
+Join the services to the premise list. This will create the base
+inventory of water services.
+
+```{r add-service-premise, }
+# Join the services to premises. This needs to be a 1:m relationship.
+base_2 <- base_1 %>%
+    left_join(uservice,
+              by = join_by(prm == premises_id),
+              multiple = "all", # this is the same behavior as SQL
+              keep = F
+              )
+
+base_inventory <- base_2
+```
+
+The total services inventory contains both active and retired water
+services. The retired water services are often replace with a new water
+service and that new service will be without lead and thus retired water
+services can prove that a water service is a non-lead service.
+
+**Total base inventory records `r fixednum(nrow(base_inventory))`**.
+
+The base inventory is really two data sets; the active water services
+and retired or replaced water services. The older retired water services
+can provide information about the remaining or newer water services.
+
+If a newer water service replaced an older service then one can conclude
+that the remaining water service is non-lead.
+
+### Split the Base Inventory to Active and Retired.
+
+The inventory of active water services needs to have each water service
+classified as "Lead", "nonLead", or "unknown". The first step is split
+the data file.
+
+```{r split-inventory, }
+# create base inventory active services  
+base_inv_active <- base_inventory %>%
+  filter(is.na(physical_disconnect_date) == T #selects only services with no disconnect date
+         & is.na(service_id) == F) # and that actually have a service ID
+
+base_inv_retired <- base_inventory %>%
+  filter(is.na(physical_disconnect_date) == F #selects only services where the disconnect date is not NA
+         | is.na(service_id) == T) # or there is no service ID (means this is a bogus record)
+```
+
+**Base inventory active contains `r fixednum(nrow(base_inv_active))`
+records.**\
+**Base inventory retired contains `r fixednum(nrow(base_inv_retired))`
+records.**\
+**Total records *active + retired* is
+`r fixednum(nrow(base_inv_active) + nrow(base_inv_retired))` records.**
+
+The active services need to be classified for lead status unknown or non-lead service
+and the retired service can provide data to help with that process.
+There is additional data in ECIS records, Banner/SCIS records, and meter
+retrofit records to classify all active water services as having lead status unknown or
+not.
+
+### Export Base Inventory to Excel
+
+The base inventory is exported to Excel workbook for ease of review.
+
+```{r export-xlsx, eval=FALSE, include=FALSE}
+# export the base inventory
+write_xlsx(list(base_active = base_inv_active,
+                base_retire = base_inv_retired),
+           path = paste0("./Excel/", "Base_Inventory.xlsx"),
+           col_names = T,
+           format_headers = T
+           )
+```
+
+### Export Base Inventory to rds files.  
+
+```{r export-rds, }
+saveRDS(base_inv_active, file = paste0(dpath, "Base_Inv_Active.rds"))
+saveRDS(base_inv_retired, file = paste0(dpath, "Base_Inv_Retired.rds"))
+```
